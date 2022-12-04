@@ -17,11 +17,18 @@ func (s *Spur) CreateDirIfNotExist(path string) error {
 
 // CreateFileIfNotExists function CreateFileIfNotExists will create file if it does not exist
 func (s *Spur) CreateFileIfNotExists(path string) error {
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		_, err := os.Create(path)
+	var _, err = os.Stat(path)
+	if os.IsNotExist(err) {
+		var file, err = os.Create(path)
 		if err != nil {
 			return err
 		}
+		defer func(file *os.File) {
+			_ = file.Close()
+
+		}(file)
+
 	}
+
 	return nil
 }
