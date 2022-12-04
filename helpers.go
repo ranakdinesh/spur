@@ -14,3 +14,14 @@ func (s *Spur) CreateDirIfNotExist(path string) error {
 	}
 	return nil
 }
+
+// CreateFileIfNotExists function CreateFileIfNotExists will create file if it does not exist
+func (s *Spur) CreateFileIfNotExists(path string) error {
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		_, err := os.Create(path)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
