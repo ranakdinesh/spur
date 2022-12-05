@@ -1,13 +1,35 @@
 package spur
 
-import "fmt"
+import (
+	"fmt"
+	"github.com/CloudyKit/jet/v6"
+	"github.com/go-chi/chi/v5"
+	"github.com/joho/godotenv"
+	"github.com/ranakdinesh/spur/render"
+	"log"
+	"net/http"
+	"os"
+	"strconv"
+	"time"
+)
 
 //const version = "1.0.0"
 
 type Spur struct {
-	AppName string
-	Debug   bool
-	Version string
+	AppName  string
+	Debug    bool
+	Version  string
+	Routes   *chi.Mux
+	Render   *render.Render
+	JetViews *jet.Set
+	Errorlog *log.Logger
+	Infolog  *log.Logger
+	RootPath string
+	config   config
+}
+type config struct {
+	port     string
+	renderer string
 }
 
 func (s *Spur) New(rootPath string) error {
@@ -25,6 +47,30 @@ func (s *Spur) New(rootPath string) error {
 	if err != nil {
 		return err
 	}
+	//Read the .env file
+	err = godotenv.Load(fmt.Sprintf("%s/.env", rootPath))
+	if err != nil {
+		return err
+	}
+
+	//Create loggers of the application
+	infoLog, errorLog := s.CreateLoggers()
+	s.Infolog = infoLog
+	s.Errorlog = errorLog
+	s.Debug, _ = strconv.ParseBool(os.Getenv("DEBUG"))
+	s.Version = os.Getenv("VERSION")
+	s.RootPath = rootPath
+	s.config = config{
+		port:     os.Getenv("PORT"),
+		renderer: os.Getenv("RENDERER"),
+	}
+	s.Routes = s.routes().(*chi.Mux)
+	s.Render = s.createRenderer()
+	// Setting Jet Views
+	var views = jet.NewSet(
+		jet.NewOSFileSystemLoader(fmt.Sprintf("%s/views", rootPath)),
+	)
+	s.JetViews = views
 
 	return nil
 }
@@ -48,4 +94,39 @@ func (s *Spur) checkDotEnv(rootPath string) error {
 	}
 
 	return nil
+}
+func (s *Spur) CreateLoggers() (*log.Logger, *log.Logger) {
+	var infoLog, errorLog *log.Logger
+	infoLog = log.New(os.Stdout, "INFO\t", log.Ldate|log.Ltime)
+	errorLog = log.New(os.Stdout, "ERROR\t", log.Ldate|log.Ltime|log.Lshortfile)
+	return infoLog, errorLog
+}
+
+//ListenAndServe function ListenAndServe will start the server
+
+func (s *Spur) ListenAndServe() {
+	srv := &http.Server{
+		Addr:         fmt.Sprintf(":%s", os.Getenv("PORT")),
+		ErrorLog:     s.Errorlog,
+		Handler:      s.routes(),
+		IdleTimeout:  30 * time.Second,
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 600 * time.Second,
+	}
+	s.Infolog.Printf("Starting server on port %s", os.Getenv("PORT"))
+	err := srv.ListenAndServe()
+	if err != nil {
+		s.Errorlog.Fatal(err)
+	}
+
+}
+func (s *Spur) createRenderer() *render.Render {
+	renderer := render.Render{
+		Renderer: s.config.renderer,
+		RootPath: s.RootPath,
+		Port:     s.config.port,
+		JetViews: s.JetViews,
+	}
+
+	return &renderer
 }
