@@ -16,6 +16,7 @@ func (s *Spur) routes() http.Handler {
 	mux.Use(middleware.Recoverer)
 	mux.Use(middleware.URLFormat)
 	mux.Use(middleware.Heartbeat("/ping"))
+	mux.Use(s.SesssionLoad)
 	mux.Use(middleware.Compress(5, "gzip"))
 	return mux
 }

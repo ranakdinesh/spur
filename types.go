@@ -5,3 +5,10 @@ type initPaths struct {
 	FolderNames []string
 	// ConfigPath string
 }
+type cookieConfig struct {
+	name     string
+	lifetime string
+	persist  string
+	secure   string
+	domain   string
+}

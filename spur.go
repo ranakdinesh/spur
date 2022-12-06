@@ -3,9 +3,11 @@ package spur
 import (
 	"fmt"
 	"github.com/CloudyKit/jet/v6"
+	"github.com/alexedwards/scs/v2"
 	"github.com/go-chi/chi/v5"
 	"github.com/joho/godotenv"
 	"github.com/ranakdinesh/spur/render"
+	"github.com/ranakdinesh/spur/session"
 	"log"
 	"net/http"
 	"os"
@@ -24,12 +26,15 @@ type Spur struct {
 	JetViews *jet.Set
 	Errorlog *log.Logger
 	Infolog  *log.Logger
+	Session  *scs.SessionManager
 	RootPath string
 	config   config
 }
 type config struct {
-	port     string
-	renderer string
+	port        string
+	renderer    string
+	cookie      cookieConfig
+	SessionType string
 }
 
 func (s *Spur) New(rootPath string) error {
@@ -63,9 +68,26 @@ func (s *Spur) New(rootPath string) error {
 	s.config = config{
 		port:     os.Getenv("PORT"),
 		renderer: os.Getenv("RENDERER"),
+		cookie: cookieConfig{
+			name:     os.Getenv("COOKIE_NAME"),
+			lifetime: os.Getenv("COOKIE_LIFETIME"),
+			persist:  os.Getenv("COOKIE_PERSIST"),
+			secure:   os.Getenv("COOKIE_SECURE"),
+			domain:   os.Getenv("COOKIE_DOMAIN"),
+		},
+		SessionType: os.Getenv("SESSION_TYPE"),
 	}
 	s.Routes = s.routes().(*chi.Mux)
 	s.Render = s.createRenderer()
+	sess := session.Session{
+		SessionType:    s.config.SessionType,
+		CookieName:     s.config.cookie.name,
+		CookieLifeTime: s.config.cookie.lifetime,
+		CookiePersist:  s.config.cookie.persist,
+		CookieSecure:   s.config.cookie.secure,
+		CookieDomain:   s.config.cookie.domain,
+	}
+	s.Session = sess.InitSession()
 	// Setting Jet Views
 	var views = jet.NewSet(
 		jet.NewOSFileSystemLoader(fmt.Sprintf("%s/views", rootPath)),
