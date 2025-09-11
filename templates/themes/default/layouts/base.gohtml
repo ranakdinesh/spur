@@ -1,0 +1,21 @@
+{{define "layouts/base.gohtml"}}
+    <!doctype html>
+    <html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <title>{{ .Title }}</title>
+        {{- if .CanonicalURL }}<link rel="canonical" href="{{ .CanonicalURL }}" />{{ end -}}
+        {{- if .OGImage }}<meta property="og:image" content="{{ .OGImage }}" />{{ end -}}
+    </head>
+    <body>
+    {{ template "components/header.gohtml" . }}
+
+    <main id="content">
+        {{ block "main-content" . }}{{ end }}
+    </main>
+
+    {{ template "components/footer.gohtml" . }}
+    </body>
+    </html>
+{{end}}
+

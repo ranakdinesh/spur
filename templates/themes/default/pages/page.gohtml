@@ -1,0 +1,38 @@
+{{ template "layouts/base.gohtml" . }}
+
+{{define "main-content"}}
+    <article class="page">
+        <h1>{{ .Title }}</h1>
+
+        {{ with index .Blocks "hero" }}
+            <section class="hero">{{ . }}</section>
+        {{ end }}
+
+        <section class="body">
+            {{ with index .Blocks "content" }}{{ . }}{{ end }}
+        </section>
+
+        {{ if .Forms }}
+            {{ range .Forms }}
+                <form method="{{ .Method }}" action="{{ .Action }}">
+                    <input type="hidden" name="csrf_token" value="{{ $.CSRFToken }}">
+                    {{ range .Fields }}
+                        <div class="field">
+                            <label for="{{ .Name }}">{{ .Label }}</label>
+                            {{- if eq .Type "textarea" -}}
+                                <textarea id="{{ .Name }}" name="{{ .Name }}" {{ if .Required }}required{{ end }} placeholder="{{ .Placeholder }}">{{ index $.Forms .Values .Name }}</textarea>
+                            {{- else -}}
+                                <input id="{{ .Name }}" type="{{ .Type }}" name="{{ .Name }}" {{ if .Required }}required{{ end }} placeholder="{{ .Placeholder }}" value="{{ index $.Forms .Values .Name }}">
+                            {{- end -}}
+                            {{ with (index $.Forms .Errors .Name) }}<p class="error">{{ . }}</p>{{ end }}
+                        </div>
+                    {{ end }}
+                    <button type="submit">Submit</button>
+                </form>
+            {{ end }}
+        {{ end }}
+    </article>
+{{end}}
+
+
+
