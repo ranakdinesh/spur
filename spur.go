@@ -113,6 +113,7 @@ func (s *Spur) Run(ctx context.Context) error {
 			defer s.wg.Done()
 			if err := s.HTTP.Start(); err != nil {
 				s.Log.Logger.Error().Err(err).Msg("http server stopped with error")
+
 				cancel()
 			}
 		}()
@@ -139,6 +140,7 @@ func (s *Spur) Run(ctx context.Context) error {
 	defer cancel2()
 	s.Shutdown(shutCtx)
 	s.wg.Wait()
+
 	s.Log.Logger.Info().Msg("all services stopped")
 	return nil
 }
