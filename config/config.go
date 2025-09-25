@@ -114,7 +114,7 @@ func Load() (*Config, error) {
 		Log: LogConfig{
 			Level:            getenv("LOG_LEVEL", "info"),
 			LoggerServiceURL: getenv("LOGGER_SERVICE_URL", ""),
-			Env:              getenv("APP_ENV", "development"),
+			Env:              Environment(env),
 			DevMode:          getbool("LOG_DEV_MODE", false),
 			OAuthTokenURL:    getenv("LOG_OAUTH_TOKEN_URL", ""),
 			ClientID:         getenv("LOG_CLIENT_ID", ""),
