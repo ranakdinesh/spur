@@ -1,4 +1,3 @@
-
 package renderer
 
 import (
@@ -29,16 +28,24 @@ type CacheConfig struct {
 type Config struct {
 	TemplateRoot string
 	DefaultTheme string
-	Cache    CacheConfig
-	Security SecurityConfig
-	Logger interface{ Printf(string, ...any) }
+	Cache        CacheConfig
+	Security     SecurityConfig
+	Logger       interface{ Printf(string, ...any) }
 }
 
 func (c Config) withDefaults() Config {
-	if c.TemplateRoot == "" { c.TemplateRoot = "./templates" }
-	if c.DefaultTheme == "" { c.DefaultTheme = "default" }
-	if c.Cache.MaxEntries <= 0 { c.Cache.MaxEntries = 256 }
-	if c.Cache.TTL <= 0 { c.Cache.TTL = 300 * time.Second }
+	if c.TemplateRoot == "" {
+		c.TemplateRoot = "./templates"
+	}
+	if c.DefaultTheme == "" {
+		c.DefaultTheme = "default"
+	}
+	if c.Cache.MaxEntries <= 0 {
+		c.Cache.MaxEntries = 256
+	}
+	if c.Cache.TTL <= 0 {
+		c.Cache.TTL = 300 * time.Second
+	}
 	return c
 }
 
@@ -58,10 +65,14 @@ func LoadConfigFromEnv() Config {
 		cfg.Cache.Mode = CachePartial
 	}
 	if v := os.Getenv("RENDERER_CACHE_MAX_ENTRIES"); v != "" {
-		if i, err := strconv.Atoi(v); err == nil && i > 0 { cfg.Cache.MaxEntries = i }
+		if i, err := strconv.Atoi(v); err == nil && i > 0 {
+			cfg.Cache.MaxEntries = i
+		}
 	}
 	if v := os.Getenv("RENDERER_CACHE_TTL_SECONDS"); v != "" {
-		if i, err := strconv.Atoi(v); err == nil && i > 0 { cfg.Cache.TTL = time.Duration(i) * time.Second }
+		if i, err := strconv.Atoi(v); err == nil && i > 0 {
+			cfg.Cache.TTL = time.Duration(i) * time.Second
+		}
 	}
 	if sec := os.Getenv("RENDERER_CSRF_SECRET"); sec != "" {
 		cfg.Security.CSRFSecret = []byte(sec)
@@ -70,6 +81,8 @@ func LoadConfigFromEnv() Config {
 }
 
 func getenvDefault(k, def string) string {
-	if v := os.Getenv(k); v != "" { return v }
+	if v := os.Getenv(k); v != "" {
+		return v
+	}
 	return def
 }

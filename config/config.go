@@ -8,6 +8,15 @@ import (
 	"github.com/joho/godotenv"
 )
 
+type Environment string
+
+const (
+	EnvDevelopment Environment = "DEVELOPMENT"
+	EnvStating     Environment = "STATING"
+	EnvProduction  Environment = "Production"
+	EnvTesting     Environment = "Testing"
+)
+
 type HTTPConfig struct {
 	Enable     bool
 	Port       int
@@ -22,7 +31,7 @@ type GRPCConfig struct {
 type LogConfig struct {
 	Level            string
 	LoggerServiceURL string
-	Env              string // development|production
+	Env              Environment // development|production
 	DevMode          bool
 	OAuthTokenURL    string
 	ClientID         string
@@ -79,7 +88,17 @@ func getint(key string, def int) int {
 }
 
 func Load() (*Config, error) {
-	_ = godotenv.Load() // optional
+
+	env := getenv("HOST_ENV", "development")
+	if env == "" {
+		env = "development"
+	}
+
+	if Environment(env) != EnvDevelopment {
+		_ = godotenv.Load()
+	}
+
+	// optional
 
 	cfg := &Config{
 		AppName: getenv("APP_NAME", "spur"),
