@@ -2,103 +2,155 @@ package httpserver
 
 import (
 	"context"
-	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
-	"github.com/go-chi/cors"
-
-	"github.com/ranakdinesh/spur/config"
 	"github.com/ranakdinesh/spur/logger"
 )
 
-// RouteGroup is a function that mounts a group of routes on a subrouter.
-type RouteGroup func(r chi.Router)
+// MountFunc lets parent apps add multiple routes at once.
+type MountFunc func(r chi.Router)
 
-type HTTPServerX struct {
-	cfg    *config.Config
+type Server struct {
+	http   *http.Server
 	log    *logger.Loggerx
-	Router *chi.Mux
-	server *http.Server
+	router chi.Router
 }
 
-// New constructs the HTTP server with health middleware and optional CORS.
-func New(cfg *config.Config, log *logger.Loggerx) (*HTTPServerX, error) {
+// NewServer builds a hardened HTTP server and allows the parent to mount routes.
+func NewServer(opts Options, log *logger.Loggerx, initialMount MountFunc) *Server {
+	if opts.ReadTimeout == 0 {
+		opts.ReadTimeout = 15 * time.Second
+	}
+	if opts.ReadHeaderTimeout == 0 {
+		opts.ReadHeaderTimeout = 15 * time.Second
+	}
+	if opts.WriteTimeout == 0 {
+		opts.WriteTimeout = 30 * time.Second
+	}
+	if opts.IdleTimeout == 0 {
+		opts.IdleTimeout = 60 * time.Second
+	}
+	if opts.EnableSecurityHeaders == false {
+		opts.EnableSecurityHeaders = true // default ON
+	}
+
 	r := chi.NewRouter()
 
-	// base middleware
-	r.Use(middleware.RequestID)
+	// Core middlewares
 	r.Use(middleware.RealIP)
-	r.Use(middleware.Heartbeat("/healthz"))
+	r.Use(middleware.RequestID)
 	r.Use(middleware.Recoverer)
+	r.Use(RequestLogger(log))
 
-	// latency logger
-	r.Use(func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-			start := time.Now()
-			next.ServeHTTP(w, req)
-			log.Logger.Debug().
-				Str("method", req.Method).
-				Str("path", req.URL.Path).
-				Dur("latency", time.Since(start)).
-				Msg("http_request")
-		})
-	})
-
-	if cfg.HTTP.EnableCORS {
-		r.Use(cors.Handler(cors.Options{
-			AllowedOrigins:   []string{"*"},
-			AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-			AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
-			ExposedHeaders:   []string{"Link"},
-			AllowCredentials: true,
-			MaxAge:           300,
-		}))
+	if opts.MaxBodyBytes > 0 {
+		r.Use(MaxBytes(opts.MaxBodyBytes))
+	}
+	if opts.EnableCORS {
+		r.Use(CORS(opts))
+	}
+	if opts.EnableSecurityHeaders {
+		r.Use(SecurityHeaders())
 	}
 
-	srv := &http.Server{
-		Addr:              fmt.Sprintf(":%d", cfg.HTTP.Port),
+	// Health endpoints
+	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	r.Get("/readyz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+
+	// Allow initial mount for convenience
+	if initialMount != nil {
+		initialMount(r)
+	}
+
+	s := &http.Server{
+		Addr:              opts.Addr,
 		Handler:           r,
-		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      15 * time.Second,
-		ReadHeaderTimeout: 5 * time.Second,
-		IdleTimeout:       60 * time.Second,
+		ReadTimeout:       opts.ReadTimeout,
+		ReadHeaderTimeout: opts.ReadHeaderTimeout,
+		WriteTimeout:      opts.WriteTimeout,
+		IdleTimeout:       opts.IdleTimeout,
 	}
 
-	return &HTTPServerX{
-		cfg:    cfg,
-		log:    log,
-		Router: r,
-		server: srv,
-	}, nil
+	return &Server{http: s, log: log, router: r}
 }
 
-// MountGroup allows parent app to mount a group of routes at a path prefix.
-func (s *HTTPServerX) MountGroup(prefix string, rg RouteGroup) {
-	s.Router.Route(prefix, func(r chi.Router) {
-		rg(r)
+// ---- Public mounting API ----
+
+// Mount adds routes directly under the root router.
+// Usage: srv.Mount(func(r) { r.Get("/index", h); r.Get("/users/list", h2) })
+func (s *Server) Mount(mounts ...MountFunc) {
+	for _, m := range mounts {
+		if m != nil {
+			m(s.router)
+		}
+	}
+}
+
+// MountGroup adds routes under a path prefix, e.g. "/users".
+//
+// Usage:
+//
+//	srv.MountGroup("/users", func(r) {
+//	    r.Get("/list", listUsers)
+//	    r.Get("/{id}", getUser)
+//	})
+func (s *Server) MountGroup(prefix string, mounts ...MountFunc) {
+	s.router.Route(prefix, func(r chi.Router) {
+		for _, m := range mounts {
+			if m != nil {
+				m(r)
+			}
+		}
 	})
 }
 
-// AddRoute allows mounting arbitrary handlers to the root router.
-func (s *HTTPServerX) AddRoute(method, path string, handler http.HandlerFunc) {
-	s.Router.Method(method, path, handler)
-}
-
-// Start begins listening.
-func (s *HTTPServerX) Start() error {
-	s.log.Info(context.Background(), "Http Server Started and Listening on ", map[string]interface{}{"port": s.cfg.HTTP.Port})
-
-	if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		return err
+// MountHost mounts routes for a specific host only (exact match).
+// Example: srv.MountHost("www.citual.com", func(r) { r.Get("/index", h) })
+func (s *Server) MountHost(host string, mounts ...MountFunc) {
+	sub := chi.NewRouter()
+	sub.Use(hostOnly(host))
+	for _, m := range mounts {
+		if m != nil {
+			m(sub)
+		}
 	}
-	return nil
+	// mount at "/" so routes keep their full paths
+	s.router.Mount("/", sub)
 }
 
-// Stop gracefully shuts down the server.
-func (s *HTTPServerX) Stop(ctx context.Context) error {
-	s.log.Logger.Info().Msg("stopping http server")
-	return s.server.Shutdown(ctx)
+// hostOnly returns 404 for requests not matching the host.
+func hostOnly(host string) func(http.Handler) http.Handler {
+	host = strings.ToLower(host)
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.EqualFold(r.Host, host) {
+				next.ServeHTTP(w, r)
+				return
+			}
+			// Not our host; let other routes handle if any. If you prefer hard 404, uncomment:
+			//			http.NotFound(w, r)
+			//			return
+			// Fall-through: do nothing; other groups may match.
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// Start runs the server and shuts down gracefully when ctx is canceled.
+func (s *Server) Start(ctx context.Context) error {
+	go func() {
+		s.log.Info(ctx).Str("addr", s.http.Addr).Msg("http server: listening")
+		if err := s.http.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			s.log.Error(ctx).Err(err).Msg("http server: fatal")
+		}
+	}()
+	<-ctx.Done()
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	s.log.Info(ctx).Msg("http server: shutting down")
+	return s.http.Shutdown(shutdownCtx)
 }

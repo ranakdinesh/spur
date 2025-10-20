@@ -10,8 +10,8 @@ import (
 	"time"
 
 	"github.com/ranakdinesh/spur/config"
-	psql "github.com/ranakdinesh/spur/database/postgres"
-	rds "github.com/ranakdinesh/spur/database/redis"
+	psql "github.com/ranakdinesh/spur/database/pgxkit"
+	rds "github.com/ranakdinesh/spur/database/rediskit"
 	"github.com/ranakdinesh/spur/grpcserver"
 	"github.com/ranakdinesh/spur/httpserver"
 	"github.com/ranakdinesh/spur/logger"
@@ -61,14 +61,14 @@ func New(ctx context.Context, cfg *config.Config, opts ...Option) (*Spur, error)
 		if pg, err := psql.New(ctx, cfg, lg); err == nil {
 			s.Postgres = pg
 		} else {
-			lg.Logger.Warn().Err(err).Msg("postgres init failed (continuing)")
+			lg.Logger.Warn().Err(err).Msg("pgxkit init failed (continuing)")
 		}
 	}
 	if s.useRedis {
 		if rd, err := rds.New(ctx, cfg, lg); err == nil {
 			s.Redis = rd
 		} else {
-			lg.Logger.Warn().Err(err).Msg("redis init failed (continuing)")
+			lg.Logger.Warn().Err(err).Msg("rediskit init failed (continuing)")
 		}
 	}
 	// Servers

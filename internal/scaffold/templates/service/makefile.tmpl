@@ -1,0 +1,11 @@
+SVC={{ .Name }}
+
+.PHONY: run build tidy
+run:
+	go run ./cmd/$(SVC)
+
+build:
+	go build -o bin/$(SVC) ./cmd/$(SVC)
+
+tidy:
+	go mod tidy

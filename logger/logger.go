@@ -1,241 +1,143 @@
 package logger
 
 import (
-	"bytes"
-	"encoding/json"
-	"net/http"
+	"context"
+	"io"
+	
 	"os"
-	"strings"
 	"time"
 
 	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
-
-	"github.com/ranakdinesh/spur/config"
-
-	"context"
-	"errors"
-	"net/url"
-	"sync"
 )
 
+// ---------- Public API ----------
+
+// Options configures the logger. Keep stdout always; optionally tee to a remote sink.
+type Options struct {
+	// Format/Mode
+	Dev bool // pretty console when true; JSON otherwise
+
+	// Optional remote HTTP sink (non-blocking, best-effort)
+	EnableHTTPSink bool
+	HTTPURL        string // e.g. http://logger-service.infra.svc:8080/api/v1/logs
+	HTTPAPIKey     string
+	HTTPTimeout    time.Duration // default 1s
+	Buffer         int           // default 1024 log lines in memory
+}
+
 type Loggerx struct {
-	Logger      zerolog.Logger
-	cfg         *config.Config
-	mu          sync.Mutex
-	accessToken string
-	tokenExpiry time.Time
-	redact      map[string]struct{}
+	l zerolog.Logger
 }
 
-func New(cfg *config.Config) *Loggerx {
-	level, err := zerolog.ParseLevel(strings.ToLower(cfg.Log.Level))
-	if err != nil {
-		level = zerolog.InfoLevel
-	}
-	var l zerolog.Logger
-	if cfg.Log.Env == "development" || cfg.Log.DevMode {
-		cw := zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339}
-		l = zerolog.New(cw).
-			With().
-			Timestamp().
-			Str("service", cfg.AppName). // include service always
-			Caller().
-			Logger().
-			Level(level)
+// NewWithOptions is the preferred constructor.
+func NewWithOptions(opts Options) *Loggerx {
+	writers := make([]io.Writer, 0, 2)
+
+	// Always keep stdout for kubectl logs / local dev.
+	if opts.Dev {
+		writers = append(writers, zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339})
 	} else {
-		l = log.Logger.
-			Level(level).
-			With().
-			Timestamp().
-			Str("service", cfg.AppName).
-			Logger()
+		writers = append(writers, os.Stdout)
 	}
 
-	// build redaction set
-	redact := map[string]struct{}{}
-	for _, k := range strings.Split(cfg.Log.RedactKeys, ",") {
-		k = strings.ToLower(strings.TrimSpace(k))
-		if k != "" {
-			redact[k] = struct{}{}
-		}
+	// Optional remote sink (HTTP).
+	if opts.EnableHTTPSink && opts.HTTPURL != "" {
+		hw := NewHTTPSink(HTTPSinkConfig{
+			URL:     opts.HTTPURL,
+			APIKey:  opts.HTTPAPIKey,
+			Timeout: firstNonZero(opts.HTTPTimeout, time.Second),
+			Buffer:  firstNonZeroInt(opts.Buffer, 1024),
+		})
+		writers = append(writers, hw) // tee: stdout + remote
 	}
 
-	return &Loggerx{Logger: l, cfg: cfg, redact: redact}
+	mw := io.MultiWriter(writers...)
+
+	// Caller points to the app callsite (skip wrappers).
+	base := zerolog.New(mw).With().Timestamp().CallerWithSkipFrameCount(2).Logger()
+	return &Loggerx{l: base}
 }
 
-// ForwardToService sends a structured log to external logger-service (best-effort).
-func (l *Loggerx) ForwardToService(event map[string]any) {
-	if l.cfg.Log.Env == "development" || l.cfg.Log.LoggerServiceURL == "" {
-		return
-	}
-	b, _ := json.Marshal(event)
-	req, _ := http.NewRequest(http.MethodPost, l.cfg.Log.LoggerServiceURL, bytes.NewReader(b))
-	req.Header.Set("Content-Type", "application/json")
-	client := &http.Client{Timeout: 2 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		l.Logger.Warn().Err(err).Msg("failed to forward log")
-		return
-	}
-	_ = resp.Body.Close()
-}
-func (l *Loggerx) LogKV(ctx context.Context, level zerolog.Level, msg string, fields map[string]any) {
-	e := l.Logger.WithLevel(level).Str("service", l.cfg.AppName).Timestamp()
+// New keeps backward compatibility with previous code paths.
+func New(dev bool) *Loggerx { return NewWithOptions(Options{Dev: dev}) }
 
-	// Context: if you propagate trace IDs, request IDs, user IDs in ctx, extract here
-	if rid := ctx.Value("request_id"); rid != nil {
-		e = e.Str("request_id", rid.(string))
-	}
-	if tid := ctx.Value("trace_id"); tid != nil {
-		e = e.Str("trace_id", tid.(string))
-	}
-	// emit local log (dev-friendly if DevMode)
-	e.Fields(fields).Msg(msg)
-
-	// forward if prod and configured
-	if !(l.cfg.Log.Env == "development" || l.cfg.Log.DevMode) && l.cfg.Log.LoggerServiceURL != "" {
-		l.forward(ctx, level, msg, fields)
-	}
+// With adds structured fields.
+func (x *Loggerx) With(kv ...interface{}) *Loggerx {
+	return &Loggerx{l: x.l.With().Fields(kv).Logger()}
 }
 
-// Convenience wrappers
-func (l *Loggerx) Info(ctx context.Context, msg string, fields map[string]any) {
-	l.LogKV(ctx, zerolog.InfoLevel, msg, fields)
-}
-func (l *Loggerx) Warn(ctx context.Context, msg string, fields map[string]any) {
-	l.LogKV(ctx, zerolog.WarnLevel, msg, fields)
-}
-func (l *Loggerx) Error(ctx context.Context, msg string, fields map[string]any) {
-	l.LogKV(ctx, zerolog.ErrorLevel, msg, fields)
-}
-func (l *Loggerx) Debug(ctx context.Context, msg string, fields map[string]any) {
-	l.LogKV(ctx, zerolog.DebugLevel, msg, fields)
-}
+// Accessors (context-aware): they attach trace/tenant/user if present in ctx.
+func (x *Loggerx) Info(ctx context.Context) *zerolog.Event  { return bindCtx(x.l, ctx).Info() }
+func (x *Loggerx) Error(ctx context.Context) *zerolog.Event { return bindCtx(x.l, ctx).Error() }
+func (x *Loggerx) Warn(ctx context.Context) *zerolog.Event  { return bindCtx(x.l, ctx).Warn() }
+func (x *Loggerx) Debug(ctx context.Context) *zerolog.Event { return bindCtx(x.l, ctx).Debug() }
 
-// redact sensitive info in fields (shallow)
-func (l *Loggerx) sanitize(in map[string]any) map[string]any {
-	if in == nil {
-		return nil
-	}
-	out := make(map[string]any, len(in))
-	for k, v := range in {
-		lk := strings.ToLower(k)
-		if _, bad := l.redact[lk]; bad {
-			out[k] = "***REDACTED***"
-			continue
-		}
-		out[k] = v
-	}
-	return out
+// Logger returns the underlying zerolog (advanced usage).
+func (x *Loggerx) Logger() zerolog.Logger { return x.l }
+
+// ---------- Context helpers (stable API you can use anywhere) ----------
+
+type ctxKey string
+
+const (
+	ctxKeyTraceID  ctxKey = "trace_id"
+	ctxKeyTenantID ctxKey = "tenant_id"
+	ctxKeyUserID   ctxKey = "user_id"
+)
+
+// WithTraceID attaches a trace ID into context.
+func WithTraceID(ctx context.Context, traceID string) context.Context {
+	return context.WithValue(ctx, ctxKeyTraceID, traceID)
 }
-
-func (l *Loggerx) forward(ctx context.Context, level zerolog.Level, msg string, fields map[string]any) {
-	if l.cfg.Log.LoggerServiceURL == "" {
-		return
-	}
-	evt := map[string]any{
-		"service": l.cfg.AppName,
-		"level":   level.String(),
-		"time":    time.Now().UTC().Format(time.RFC3339Nano),
-		"message": msg,
-		"fields":  l.sanitize(fields),
-	}
-	if rid := ctx.Value("request_id"); rid != nil {
-		evt["request_id"] = rid
-	}
-	if tid := ctx.Value("trace_id"); tid != nil {
-		evt["trace_id"] = tid
-	}
-
-	b, _ := json.Marshal(evt)
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, l.cfg.Log.LoggerServiceURL, bytes.NewReader(b))
-	req.Header.Set("Content-Type", "application/json")
-
-	// attach bearer if we can obtain it
-	if token, _ := l.getAccessToken(ctx); token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-
-	client := &http.Client{Timeout: 3 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		l.Logger.Warn().Err(err).Msg("logger forward failed")
-		return
-	}
-	_ = resp.Body.Close()
+func WithTenantID(ctx context.Context, tenantID string) context.Context {
+	return context.WithValue(ctx, ctxKeyTenantID, tenantID)
+}
+func WithUserID(ctx context.Context, userID string) context.Context {
+	return context.WithValue(ctx, ctxKeyUserID, userID)
 }
 
-// OAuth2 Client Credentials (token caching)
-func (l *Loggerx) getAccessToken(ctx context.Context) (string, error) {
-	l.mu.Lock()
-	if time.Now().Before(l.tokenExpiry.Add(-15*time.Second)) && l.accessToken != "" {
-		tok := l.accessToken
-		l.mu.Unlock()
-		return tok, nil
-	}
-	l.mu.Unlock()
-
-	if l.cfg.Log.OAuthTokenURL == "" || l.cfg.Log.ClientID == "" || l.cfg.Log.ClientSecret == "" {
-		return "", errors.New("oauth client-credentials not configured")
-	}
-
-	form := url.Values{}
-	form.Set("grant_type", "client_credentials")
-	form.Set("client_id", l.cfg.Log.ClientID)
-	form.Set("client_secret", l.cfg.Log.ClientSecret)
-
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, l.cfg.Log.OAuthTokenURL, strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-
-	client := &http.Client{Timeout: 3 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", errors.New("token endpoint error: " + resp.Status)
-	}
-	var tok struct {
-		AccessToken string `json:"access_token"`
-		ExpiresIn   int64  `json:"expires_in"`
-		TokenType   string `json:"token_type"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&tok); err != nil {
-		return "", err
-	}
-
-	l.mu.Lock()
-	l.accessToken = tok.AccessToken
-	// be defensive on expiry; default to 5 minutes if missing
-	if tok.ExpiresIn <= 0 {
-		tok.ExpiresIn = 300
-	}
-	l.tokenExpiry = time.Now().Add(time.Duration(tok.ExpiresIn) * time.Second)
-	l.mu.Unlock()
-
-	return tok.AccessToken, nil
+func TraceIDFrom(ctx context.Context) (string, bool) {
+	v, ok := ctx.Value(ctxKeyTraceID).(string)
+	return v, ok
+}
+func TenantIDFrom(ctx context.Context) (string, bool) {
+	v, ok := ctx.Value(ctxKeyTenantID).(string)
+	return v, ok
+}
+func UserIDFrom(ctx context.Context) (string, bool) {
+	v, ok := ctx.Value(ctxKeyUserID).(string)
+	return v, ok
 }
 
-// WithCtx creates an event pre-populated with service + context IDs.
-// Usage:
-//
-//	l.WithCtx(ctx).Str("key","val").Msg("something")
-func (l *Loggerx) WithCtx(ctx context.Context, level zerolog.Level) *zerolog.Event {
-	e := l.Logger.WithLevel(level).
-		Str("service", l.cfg.AppName).
-		Timestamp()
+// ---------- Internal ----------
 
-	if rid := ctx.Value("request_id"); rid != nil {
-		if s, ok := rid.(string); ok {
-			e = e.Str("request_id", s)
-		}
+func bindCtx(l zerolog.Logger, ctx context.Context) *zerolog.Logger {
+	if ctx == nil {
+		return &l
 	}
-	if tid := ctx.Value("trace_id"); tid != nil {
-		if s, ok := tid.(string); ok {
-			e = e.Str("trace_id", s)
-		}
+	ev := l.With()
+	if v, ok := TraceIDFrom(ctx); ok && v != "" {
+		ev = ev.Str("trace_id", v)
 	}
-	return e
+	if v, ok := TenantIDFrom(ctx); ok && v != "" {
+		ev = ev.Str("tenant_id", v)
+	}
+	if v, ok := UserIDFrom(ctx); ok && v != "" {
+		ev = ev.Str("user_id", v)
+	}
+	ll := ev.Logger()
+	return &ll
+}
+
+func firstNonZero(v, d time.Duration) time.Duration {
+	if v == 0 {
+		return d
+	}
+	return v
+}
+func firstNonZeroInt(v, d int) int {
+	if v == 0 {
+		return d
+	}
+	return v
 }

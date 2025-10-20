@@ -8,10 +8,9 @@ import (
 	"os"
 	"time"
 
-	"github.com/go-chi/chi/v5"
+	"github.com/ranakdinesh/spur"
 
 	"github.com/ranakdinesh/spur/renderer"
-	"github.com/ranakdinesh/spur/spur"
 )
 
 type App struct {
@@ -53,22 +52,25 @@ func main() {
 	ren := renderer.LoadConfigFromEnv()
 	ren.Logger = log.New(os.Stderr, "renderer", log.LstdFlags|log.Lshortfile)
 
-	eng, err := renderer.New(ren)
-	if err != nil {
-		log.Fatalf("could not create renderer: %v", err)
-	}
+	//eng, err := renderer.New(ren)
+	//if err != nil {
+	//	log.Fatalf("could not create renderer: %v", err)
+	//}
 
-	ap := New(eng)
+	//ap := New(eng)
 	// HTTP route group (parent app)
 	if s.HTTP != nil {
-		s.HTTP.MountGroup("/api", func(r chi.Router) {
-			r.Get("/", ap.Home)
-		})
+		//s.HTTP.MountGroup("/api", func(r chi.Router) {
+		//	r.Get("/", ap.Home)
+		//})
 	}
 
 	// start everything
 	if err := s.Run(context.Background()); err != nil {
-		s.Log.Logger.Error().Err(err).Msg("spur stopped with error")
+		//s.Log.Logger().Err(err).Msg("spur stopped with error")
+		//s.Log.Logger.Error().Err(err).Msg("spur stopped with error")
+
+		s.Log.Info(ctx).Msg("spur stopped with error")
 	}
 
 	// give some time to flush logs, exporters, etc.
