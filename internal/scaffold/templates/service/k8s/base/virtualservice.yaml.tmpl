@@ -1,0 +1,37 @@
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: {{ .Name }}-vs
+  namespace: default
+spec:
+  gateways:
+    - {{ .Name }}-gw
+  hosts:
+    - "{{ .Name }}.local"
+  http:
+    # path-based routing examples for your earlier use-cases:
+    - name: index
+      match:
+        - uri:
+            exact: /index
+      route:
+        - destination:
+            host: {{ .Name }}
+            port:
+              number: 80
+    - name: users
+      match:
+        - uri:
+            prefix: /users
+      route:
+        - destination:
+            host: {{ .Name }}
+            port:
+              number: 80
+    # catch-all
+    - name: default
+      route:
+        - destination:
+            host: {{ .Name }}
+            port:
+              number: 80

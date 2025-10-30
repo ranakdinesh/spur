@@ -1,0 +1,64 @@
+package app
+
+import (
+	"context"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/sdk/resource"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	semconv "go.opentelemetry.io/otel/semconv/v1.21.0" // Use a specific version
+	"go.opentelemetry.io/otel/trace"
+)
+
+// setupObservability initializes an OTLP tracer provider
+func setupObservability(ctx context.Context, serviceName, appEnv, endpoint string) (trace.TracerProvider, func(context.Context) error, error) {
+	if endpoint == "" {
+		// Return a NoOp provider and no-op shutdown if no endpoint is configured
+		return trace.NewNoopTracerProvider(), func(context.Context) error { return nil }, nil
+	}
+
+	// Create OTLP/HTTP exporter
+	exporter, err := otlptracehttp.New(ctx,
+		otlptracehttp.WithEndpoint(endpoint),
+		otlptracehttp.WithInsecure(), // Use WithInsecure() for HTTP
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Define the service resource
+	res := resource.NewWithAttributes(
+		semconv.SchemaURL,
+		semconv.ServiceNameKey.String(serviceName),
+		semconv.DeploymentEnvironmentKey.String(appEnv),
+	)
+
+	// Create a BatchSpanProcessor
+	bsp := sdktrace.NewBatchSpanProcessor(exporter)
+
+	// Create the TracerProvider
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithSpanProcessor(bsp),
+		sdktrace.WithResource(res),
+		// Use AlwaysSample sampler for development.
+		// For production, use ParentBased(TraceIDRatioBased(0.1)) for 10% sampling.
+		sdktrace.WithSampler(sdktrace.AlwaysSample()),
+	)
+
+	// Set the global TracerProvider
+	otel.SetTracerProvider(tp)
+
+	// Set global propagators to W3C Trace Context and Baggage
+	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
+		propagation.TraceContext{},
+		propagation.Baggage{},
+	))
+
+	// Return the provider and its shutdown function
+	shutdown := func(ctx context.Context) error {
+		return tp.Shutdown(ctx)
+	}
+	return tp, shutdown, nil
+}

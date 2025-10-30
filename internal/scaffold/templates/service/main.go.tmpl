@@ -1,0 +1,39 @@
+package main
+
+import (
+	"context"
+	"log" // Use standard logger only for fatal startup errors
+	"os"
+	"os/signal"
+	"syscall"
+
+	app "{{ .Module }}/internal/app"
+)
+
+func main() {
+	// --- Lifecycle ---
+	// Create context that listens for interrupt and terminate signals
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	// --- Build App ---
+	// New initializes all dependencies (config, logger, db, etc.)
+	a, err := app.New(ctx)
+	if err != nil {
+		log.Fatalf("failed to build app: %v", err)
+	}
+
+	// --- Run App ---
+	// Run starts all servers and blocks until shutdown
+	if err := a.Run(ctx); err != nil {
+		// Use the app's logger if available, otherwise fallback
+		if a.Log != nil {
+			a.Log.Error(ctx).Err(err).Msg("app exited with error")
+		} else {
+			log.Printf("app exited with error: %v", err)
+		}
+		os.Exit(1)
+	}
+
+	log.Println("application shutdown complete")
+}

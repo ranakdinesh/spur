@@ -1,0 +1,143 @@
+package logger
+
+import (
+	"context"
+	"io"
+	
+	"os"
+	"time"
+
+	"github.com/rs/zerolog"
+)
+
+// ---------- Public API ----------
+
+// Options configures the logger. Keep stdout always; optionally tee to a remote sink.
+type Options struct {
+	// Format/Mode
+	Dev bool // pretty console when true; JSON otherwise
+
+	// Optional remote HTTP sink (non-blocking, best-effort)
+	EnableHTTPSink bool
+	HTTPURL        string // e.g. http://logger-service.infra.svc:8080/api/v1/logs
+	HTTPAPIKey     string
+	HTTPTimeout    time.Duration // default 1s
+	Buffer         int           // default 1024 log lines in memory
+}
+
+type Loggerx struct {
+	l zerolog.Logger
+}
+
+// NewWithOptions is the preferred constructor.
+func NewWithOptions(opts Options) *Loggerx {
+	writers := make([]io.Writer, 0, 2)
+
+	// Always keep stdout for kubectl logs / local dev.
+	if opts.Dev {
+		writers = append(writers, zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339})
+	} else {
+		writers = append(writers, os.Stdout)
+	}
+
+	// Optional remote sink (HTTP).
+	if opts.EnableHTTPSink && opts.HTTPURL != "" {
+		hw := NewHTTPSink(HTTPSinkConfig{
+			URL:     opts.HTTPURL,
+			APIKey:  opts.HTTPAPIKey,
+			Timeout: firstNonZero(opts.HTTPTimeout, time.Second),
+			Buffer:  firstNonZeroInt(opts.Buffer, 1024),
+		})
+		writers = append(writers, hw) // tee: stdout + remote
+	}
+
+	mw := io.MultiWriter(writers...)
+
+	// Caller points to the app callsite (skip wrappers).
+	base := zerolog.New(mw).With().Timestamp().CallerWithSkipFrameCount(2).Logger()
+	return &Loggerx{l: base}
+}
+
+// New keeps backward compatibility with previous code paths.
+func New(dev bool) *Loggerx { return NewWithOptions(Options{Dev: dev}) }
+
+// With adds structured fields.
+func (x *Loggerx) With(kv ...interface{}) *Loggerx {
+	return &Loggerx{l: x.l.With().Fields(kv).Logger()}
+}
+
+// Accessors (context-aware): they attach trace/tenant/user if present in ctx.
+func (x *Loggerx) Info(ctx context.Context) *zerolog.Event  { return bindCtx(x.l, ctx).Info() }
+func (x *Loggerx) Error(ctx context.Context) *zerolog.Event { return bindCtx(x.l, ctx).Error() }
+func (x *Loggerx) Warn(ctx context.Context) *zerolog.Event  { return bindCtx(x.l, ctx).Warn() }
+func (x *Loggerx) Debug(ctx context.Context) *zerolog.Event { return bindCtx(x.l, ctx).Debug() }
+
+// Logger returns the underlying zerolog (advanced usage).
+func (x *Loggerx) Logger() zerolog.Logger { return x.l }
+
+// ---------- Context helpers (stable API you can use anywhere) ----------
+
+type ctxKey string
+
+const (
+	ctxKeyTraceID  ctxKey = "trace_id"
+	ctxKeyTenantID ctxKey = "tenant_id"
+	ctxKeyUserID   ctxKey = "user_id"
+)
+
+// WithTraceID attaches a trace ID into context.
+func WithTraceID(ctx context.Context, traceID string) context.Context {
+	return context.WithValue(ctx, ctxKeyTraceID, traceID)
+}
+func WithTenantID(ctx context.Context, tenantID string) context.Context {
+	return context.WithValue(ctx, ctxKeyTenantID, tenantID)
+}
+func WithUserID(ctx context.Context, userID string) context.Context {
+	return context.WithValue(ctx, ctxKeyUserID, userID)
+}
+
+func TraceIDFrom(ctx context.Context) (string, bool) {
+	v, ok := ctx.Value(ctxKeyTraceID).(string)
+	return v, ok
+}
+func TenantIDFrom(ctx context.Context) (string, bool) {
+	v, ok := ctx.Value(ctxKeyTenantID).(string)
+	return v, ok
+}
+func UserIDFrom(ctx context.Context) (string, bool) {
+	v, ok := ctx.Value(ctxKeyUserID).(string)
+	return v, ok
+}
+
+// ---------- Internal ----------
+
+func bindCtx(l zerolog.Logger, ctx context.Context) *zerolog.Logger {
+	if ctx == nil {
+		return &l
+	}
+	ev := l.With()
+	if v, ok := TraceIDFrom(ctx); ok && v != "" {
+		ev = ev.Str("trace_id", v)
+	}
+	if v, ok := TenantIDFrom(ctx); ok && v != "" {
+		ev = ev.Str("tenant_id", v)
+	}
+	if v, ok := UserIDFrom(ctx); ok && v != "" {
+		ev = ev.Str("user_id", v)
+	}
+	ll := ev.Logger()
+	return &ll
+}
+
+func firstNonZero(v, d time.Duration) time.Duration {
+	if v == 0 {
+		return d
+	}
+	return v
+}
+func firstNonZeroInt(v, d int) int {
+	if v == 0 {
+		return d
+	}
+	return v
+}

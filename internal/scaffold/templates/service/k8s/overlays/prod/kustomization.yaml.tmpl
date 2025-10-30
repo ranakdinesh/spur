@@ -1,0 +1,14 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+nameSuffix: ""
+namespace: default
+
+resources:
+  - ../../base
+
+images:
+  - name: ghcr.io/${GITHUB_REPOSITORY}
+    newTag: latest # or a SHA you pass in CI
+patches:
+  - path: patch-deploy.yaml

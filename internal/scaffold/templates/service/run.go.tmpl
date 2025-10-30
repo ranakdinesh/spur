@@ -1,0 +1,83 @@
+package app
+
+import (
+	"context"
+	"net/http"
+
+
+	"golang.org/x/sync/errgroup"
+)
+
+// Run starts all servers and waits for a shutdown signal.
+func (a *App) Run(ctx context.Context) error {
+	a.Log.Info(ctx).Msg("starting application servers")
+
+	// Use an errgroup to manage concurrent server routines
+	// and capture the first error that occurs.
+	g, ctx := errgroup.WithContext(ctx)
+
+	// Start HTTP server
+	g.Go(func() error {
+		a.Log.Info(ctx).Str("addr", a.Config.HTTPAddr).Msg("http server starting")
+		if err := a.HTTP.Start(ctx); err != nil && err != http.ErrServerClosed {
+			a.Log.Error(ctx).Err(err).Msg("http server failed")
+			return err
+		}
+		a.Log.Info(ctx).Msg("http server stopped gracefully")
+		return nil
+	})
+
+	{{- if .WithGRPC }}
+	// Optional gRPC server
+	if a.GRPC != nil {
+		g.Go(func() error {
+			a.Log.Info(ctx).Str("addr", a.Config.GRPCAddr).Msg("grpc server starting")
+			if err := a.GRPC.Start(ctx); err != nil {
+				a.Log.Error(ctx).Err(err).Msg("grpc server failed")
+				return err
+			}
+			a.Log.Info(ctx).Msg("grpc server stopped gracefully")
+			return nil
+		})
+	}
+	{{- end }}
+
+	// Wait for context cancellation (e.g., SIGINT) or
+	// for one of the servers to return an error.
+	err := g.Wait()
+
+	// --- Graceful Shutdown ---
+	// This block runs after ctx is Done() or an error occurred.
+	a.Log.Info(context.Background()).Msg("shutting down dependencies")
+
+	// Shutdown OTel provider
+	if a.otelShutdown != nil {
+		if shutErr := a.otelShutdown(context.Background()); shutErr != nil {
+			a.Log.Error(context.Background()).Err(shutErr).Msg("otel shutdown failed")
+		}
+	}
+
+	// Clean up other dependencies
+	{{- if .WithPostgres }}
+	if a.DB != nil {
+		a.DB.Close()
+		a.Log.Info(context.Background()).Msg("db connection closed")
+	}
+	{{- end }}
+	{{- if .WithRedis }}
+	if a.RDB != nil {
+		if shutErr := a.RDB.Close(); shutErr != nil {
+			a.Log.Error(context.Background()).Err(shutErr).Msg("redis connection close failed")
+		} else {
+			a.Log.Info(context.Background()).Msg("redis connection closed")
+		}
+	}
+	{{- end }}
+	{{- if .WithAuth }}
+	if a.Auth != nil {
+		a.Auth.Close()
+	}
+	{{- end }}
+
+	return err
+}

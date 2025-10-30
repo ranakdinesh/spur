@@ -1,0 +1,25 @@
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: {{ .Name }}-gw
+  namespace: default
+spec:
+  selector:
+    istio: ingressgateway   # matches istio-system/istio-ingressgateway Service by default
+  servers:
+    - port:
+        number: 80
+        name: http
+        protocol: HTTP
+      hosts:
+        - "{{ .Name }}.local"      # change or add more hosts here
+      # If you terminate TLS at Istio, add a TLS server:
+      # - port:
+      #     number: 443
+      #     name: https
+      #     protocol: HTTPS
+      #   hosts:
+      #     - "{{ .Name }}.local"
+      #   tls:
+      #     mode: SIMPLE
+      #     credentialName: {{ .Name }}-tls   # Secret in istio-system or same namespace (per your ingressgateway SDS setup)
