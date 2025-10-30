@@ -3,11 +3,12 @@ package logger
 import (
 	"context"
 	"io"
-	
+	"strings"
+
+	"fmt"
+	"github.com/rs/zerolog"
 	"os"
 	"time"
-
-	"github.com/rs/zerolog"
 )
 
 // ---------- Public API ----------
@@ -31,11 +32,39 @@ type Loggerx struct {
 
 // NewWithOptions is the preferred constructor.
 func NewWithOptions(opts Options) *Loggerx {
+	// ---- Global zerolog field names and caller shortener ----
+	zerolog.TimeFieldFormat = time.RFC3339
+	zerolog.TimestampFieldName = "ts"
+	zerolog.LevelFieldName = "lvl"
+	zerolog.MessageFieldName = "msg"
+	zerolog.CallerFieldName = "caller"
+	// Trim caller paths like "../../../../go/pkg/mod/.../file.go:123" -> "pkg/file.go:123"
+	zerolog.CallerMarshalFunc = func(_ uintptr, file string, line int) string {
+		parts := strings.Split(file, "/")
+		if len(parts) > 2 {
+			file = strings.Join(parts[len(parts)-2:], "/")
+		}
+		return fmt.Sprintf("%s:%d", file, line)
+	}
 	writers := make([]io.Writer, 0, 2)
 
 	// Always keep stdout for kubectl logs / local dev.
 	if opts.Dev {
-		writers = append(writers, zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339})
+		// ---- Global zerolog field names and caller shortener ----
+		zerolog.TimeFieldFormat = time.RFC3339
+		zerolog.TimestampFieldName = "ts"
+		zerolog.LevelFieldName = "lvl"
+		zerolog.MessageFieldName = "msg"
+		zerolog.CallerFieldName = "caller"
+		// Trim caller paths like "../../../../go/pkg/mod/.../file.go:123" -> "pkg/file.go:123"
+		zerolog.CallerMarshalFunc = func(_ uintptr, file string, line int) string {
+			parts := strings.Split(file, "/")
+			if len(parts) > 2 {
+				file = strings.Join(parts[len(parts)-2:], "/")
+			}
+			return fmt.Sprintf("%s:%d", file, line)
+		}
+
 	} else {
 		writers = append(writers, os.Stdout)
 	}
@@ -54,7 +83,8 @@ func NewWithOptions(opts Options) *Loggerx {
 	mw := io.MultiWriter(writers...)
 
 	// Caller points to the app callsite (skip wrappers).
-	base := zerolog.New(mw).With().Timestamp().CallerWithSkipFrameCount(2).Logger()
+
+	base := zerolog.New(mw).With().Caller().Timestamp().CallerWithSkipFrameCount(2).Logger()
 	return &Loggerx{l: base}
 }
 

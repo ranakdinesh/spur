@@ -51,11 +51,11 @@ func (a *App) Run(ctx context.Context) error {
 	a.Log.Info(context.Background()).Msg("shutting down dependencies")
 
 	// Shutdown OTel provider
-	if a.otelShutdown != nil {
-		if shutErr := a.otelShutdown(context.Background()); shutErr != nil {
-			a.Log.Error(context.Background()).Err(shutErr).Msg("otel shutdown failed")
-		}
-	}
+	//if a.otelShutdown != nil {
+	//	if shutErr := a.otelShutdown(context.Background()); shutErr != nil {
+	//		a.Log.Error(context.Background()).Err(shutErr).Msg("otel shutdown failed")
+	//	}
+	//}
 
 	// Clean up other dependencies
 	{{- if .WithPostgres }}
