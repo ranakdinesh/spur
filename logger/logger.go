@@ -3,11 +3,13 @@ package logger
 import (
 	"context"
 	"io"
+	"strconv"
 	"strings"
 
 	"fmt"
 	"github.com/rs/zerolog"
 	"os"
+
 	"time"
 )
 
@@ -32,6 +34,10 @@ type Loggerx struct {
 
 // NewWithOptions is the preferred constructor.
 func NewWithOptions(opts Options) *Loggerx {
+	// ---------- Global zerolog config ----------
+	// Level (default Info; override via LOG_LEVEL: debug|info|warn|error)
+	zerolog.SetGlobalLevel(parseLevel(getEnv("LOG_LEVEL", "info")))
+
 	// ---- Global zerolog field names and caller shortener ----
 	zerolog.TimeFieldFormat = time.RFC3339
 	zerolog.TimestampFieldName = "ts"
@@ -50,20 +56,22 @@ func NewWithOptions(opts Options) *Loggerx {
 
 	// Always keep stdout for kubectl logs / local dev.
 	if opts.Dev {
-		// ---- Global zerolog field names and caller shortener ----
-		zerolog.TimeFieldFormat = time.RFC3339
-		zerolog.TimestampFieldName = "ts"
-		zerolog.LevelFieldName = "lvl"
-		zerolog.MessageFieldName = "msg"
-		zerolog.CallerFieldName = "caller"
-		// Trim caller paths like "../../../../go/pkg/mod/.../file.go:123" -> "pkg/file.go:123"
-		zerolog.CallerMarshalFunc = func(_ uintptr, file string, line int) string {
-			parts := strings.Split(file, "/")
-			if len(parts) > 2 {
-				file = strings.Join(parts[len(parts)-2:], "/")
-			}
-			return fmt.Sprintf("%s:%d", file, line)
+		cw := zerolog.ConsoleWriter{
+			Out:        os.Stdout,
+			TimeFormat: "2006-01-02 15:04:05.000",
 		}
+		// Short caller in console view as well
+		cw.FormatCaller = func(i interface{}) string {
+			if caller, ok := i.(string); ok {
+				parts := strings.Split(caller, "/")
+				if len(parts) > 2 {
+					return parts[len(parts)-2] + "/" + parts[len(parts)-1]
+				}
+				return caller
+			}
+			return fmt.Sprintf("%v", i)
+		}
+		writers = append(writers, cw)
 
 	} else {
 		writers = append(writers, os.Stdout)
@@ -85,6 +93,8 @@ func NewWithOptions(opts Options) *Loggerx {
 	// Caller points to the app callsite (skip wrappers).
 
 	base := zerolog.New(mw).With().Caller().Timestamp().CallerWithSkipFrameCount(2).Logger()
+	// One-time sanity probe so you SEE something if wiring is correct.
+	base.Debug().Str("dev", strconv.FormatBool(opts.Dev)).Msg("logger online")
 	return &Loggerx{l: base}
 }
 
@@ -170,4 +180,35 @@ func firstNonZeroInt(v, d int) int {
 		return d
 	}
 	return v
+}
+
+// ---------- helpers ----------
+func getEnv(k, def string) string {
+	if v := os.Getenv(k); v != "" {
+		return v
+	}
+	return def
+}
+
+func parseLevel(s string) zerolog.Level {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "trace":
+		return zerolog.TraceLevel
+	case "debug":
+		return zerolog.DebugLevel
+	case "info", "":
+		return zerolog.InfoLevel
+	case "warn", "warning":
+		return zerolog.WarnLevel
+	case "error", "err":
+		return zerolog.ErrorLevel
+	case "fatal":
+		return zerolog.FatalLevel
+	case "panic":
+		return zerolog.PanicLevel
+	case "disabled", "off", "none":
+		return zerolog.Disabled
+	default:
+		return zerolog.InfoLevel
+	}
 }
