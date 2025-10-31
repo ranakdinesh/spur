@@ -1,5 +1,11 @@
 SVC={{ .Name }}
 
+MIGRATE ?= migrate
+SQLC ?= sqlc
+
+MIGRATIONS_DIR :=sql/migrations
+
+
 .PHONY: run build tidy
 run:
 	go run ./cmd/$(SVC)
@@ -15,7 +21,26 @@ tidy:
 #   go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
 #   brew install protobuf   # or apt/yum equivalent
 proto:
-	protoc -I . \
-	  api/helloworld/v1/greeter.proto \
-	  --go_out=. --go_opt=paths=source_relative \
-	  --go-grpc_out=. --go-grpc_opt=paths=source_relative
+	protoc \
+		-I=./proto \
+		--go_out=./internal/adapters/grpcx/pb --go_opt=paths=source_relative \
+		--go-grpc_out=./internal/adapters/grpcx/pb --go-grpc_opt=paths=source_relative \
+		./proto/*.proto
+
+# Create a new migration: make migrate-new NAME=create_users
+migrate-new:
+	@if [ -z "$(NAME)" ]; then \
+		echo "Error: NAME is required. Usage: make migrate-new NAME=create_users"; \
+		exit 1; \
+	fi
+	@mkdir -p $(MIGRATIONS_DIR)
+	@echo "Creating migration $(NAME) using golang-migrate format"; \
+	$(MIGRATE) create \
+    		-ext sql \
+    		-dir $(MIGRATIONS_DIR) \
+    		-seq \
+    		-digits 4 \
+    		"$(NAME)"
+# sqlc codegen
+sqlc-generate:
+	$(SQLC) generate

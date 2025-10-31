@@ -27,3 +27,12 @@ sql:
           go_type:
           import: "github.com/google/uuid"
           type: "UUID"
+        - db_type: "timestamp"
+          nullable: true
+          go_type:
+          import: "time"
+          type: "time.Time"
+        - db_type: "timestamptz"
+          nullable: true
+          go_type: "time.Time"
+          import: "time"

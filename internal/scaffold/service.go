@@ -158,7 +158,7 @@ func Service(opt Options) error {
 		return err
 	}
 	if err := render("templates/service/main.go.tmpl",
-		filepath.Join(root, "cmd", "accounts", "main.go"), opt); err != nil {
+		filepath.Join(root, "cmd", opt.Name, "main.go"), opt); err != nil {
 		return err
 	}
 	if err := render("templates/service/app.go.tmpl",
