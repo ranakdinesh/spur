@@ -43,7 +43,7 @@ func authInterceptor(opt Options) grpc.UnaryServerInterceptor {
 		}
 
 		if opt.EnrichContext != nil {
-			ctx = opt.EnrichContext(ctx, token, claims)
+			ctx = opt.EnrichContext(ctx, token, *claims)
 		}
 		return h(ctx, req)
 	}

@@ -237,73 +237,66 @@ func (a *App) registerHTTPRoutes(r chi.Router) {
 {{- if .WithGRPC }}
 // setupGRPCServer configures the gRPC server.
 func (a *App) setupGRPCServer(ctx context.Context) error {
-	// --- ADAPTER FUNCTION ---
-	// This function bridges the gap between authclient.Validator and grpcserver.UnaryAuthFunc
-
-	{{- if .WithAuth }}
-	validate := func(ctx context.Context, token string) (grpcserver.Claims, error) {
-        claims, err := a.Auth.Validate(ctx, token)
-        if err != nil {
-            a.Log.Warn(ctx).Err(err).Msg("gRPC auth validation failed")
-            return grpcserver.Claims{}, status.Error(codes.Unauthenticated, "unauthorized")
-        }
-        return grpcserver.Claims{
-            Subject:  claims.Subject,
-            TenantID: claims.TenantID,
-            Scope:    claims.Scope,
-            Raw:      nil, // optional
-        }, nil
+    // Build server options
+    opt := grpcserver.Options{
+        Addr: a.Config.GRPCAddr,
+        Log:  a.Log,
+        // TracerProvider: otel.GetTracerProvider(), // optional
     }
 
-    // 2) Enrich context for downstream handlers (optional but recommended)
-    enricher := func(ctx context.Context, token string, c grpcserver.Claims) context.Context {
-        ctx = authclient.WithToken(ctx, token)
-        if c.Subject != "" {
-            ctx = authclient.WithSubject(ctx, c.Subject)
-            ctx = logger.WithUserID(ctx, c.Subject)
+    {{- if .WithAuth }}
+    // When auth is enabled, wire validator and context enricher
+    if a.Auth != nil {
+        validate := func(token string) (*grpcserver.Claims, error) {
+            claims, err := a.Auth.Validate(context.Background(), token)
+            if err != nil {
+                a.Log.Warn(ctx).Err(err).Msg("gRPC auth validation failed")
+                return nil, status.Error(codes.Unauthenticated, "unauthorized")
+            }
+            return &grpcserver.Claims{
+                Subject:  claims.Subject,
+                TenantID: claims.TenantID,
+                Scope:    claims.Scope,
+                Raw:      nil,
+            }, nil
         }
-        if c.TenantID != "" {
-            ctx = authclient.WithTenantID(ctx, c.TenantID)
-            ctx = logger.WithTenantID(ctx, c.TenantID)
+
+        enricher := func(ctx context.Context, token string, c grpcserver.Claims) context.Context {
+            ctx = authclient.WithToken(ctx, token)
+            if c.Subject != "" {
+                ctx = authclient.WithSubject(ctx, c.Subject)
+                ctx = logger.WithUserID(ctx, c.Subject)
+            }
+            if c.TenantID != "" {
+                ctx = authclient.WithTenantID(ctx, c.TenantID)
+                ctx = logger.WithTenantID(ctx, c.TenantID)
+            }
+            if len(c.Scope) > 0 {
+                ctx = authclient.WithScopes(ctx, c.Scope)
+            }
+            return ctx
         }
-        if len(c.Scope) > 0 {
-            ctx = authclient.WithScopes(ctx, c.Scope)
-        }
-        return ctx
+
+        opt.ValidateToken = validate
+        opt.APIKeyHeader = a.Config.APIKeyHeader
+        opt.AllowUnAuthenticated = []string{"/grpc.health.v1.Health/*", "/grpc.reflection.v1alpha.ServerReflection/*"}
+        opt.EnrichContext = enricher
     }
+    {{- end }}
 
-    // 3) Pass these to the server options
-    srv, err := grpcserver.New(grpcserver.Options{
-        Addr:              a.Config.GRPCAddr,
-        Log:               a.Log,
-        ValidateToken:     validate,
-        APIKeyHeader:      a.Config.APIKeyHeader, // optional
-        AllowUnauthenticated: []string{"/grpc.health.v1.Health/*", "/grpc.reflection.v1alpha.ServerReflection/*"},
-        EnrichContext:     enricher,
-    }, register)
-	{{- end }}
-	// --- END ADAPTER ---
-
-	gsv, err := grpcserver.New(grpcserver.Options{
-		Addr:           a.Config.GRPCAddr,
-		Log:            a.Log,
-		// TracerProvider: otel.GetTracerProvider(), // Pass the global tracer
-		{{- if .WithAuth }}
-		Auth:           authFunc, // Pass the adapter function
-		{{- end }}
-	}, func(r grpcserver.GRPCRegistrar) {
-		// --- ADAPTER REGISTRATION ---
-		// Register your gRPC service adapters here.
-		// Example:
-		// myAdapter := grpcadapter.New(a.Log, a.DB)
-		// pb.RegisterGreeterService(r, myAdapter)
-		// ----------------------------
-	})
-	if err != nil {
-		return err
-	}
-	a.GRPC = gsv
-	return nil
+    gsv, err := grpcserver.New(opt, func(r grpcserver.GRPCRegistrar) {
+        // --- ADAPTER REGISTRATION ---
+        // Register your gRPC service adapters here.
+        // Example:
+        // myAdapter := grpcadapter.New(a.Log, a.DB)
+        // pb.RegisterGreeterService(r, myAdapter)
+        // ----------------------------
+    })
+    if err != nil {
+        return err
+    }
+    a.GRPC = gsv
+    return nil
 }
 {{- end }}
 
