@@ -2,8 +2,6 @@ package grpcserver
 
 import (
 	"context"
-	"encoding/base64"
-	"encoding/json"
 	"strings"
 
 	"google.golang.org/grpc"
@@ -12,77 +10,71 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// authInterceptor bridges the pluggable UnaryAuthFunc into a gRPC unary interceptor.
-// It extracts credentials from incoming metadata and provides a lightweight claims map.
-//
-// Notes:
-//   - If an "authorization: Bearer <JWT>" header is present, the JWT payload is decoded
-//     WITHOUT signature verification (for convenience). Your UnaryAuthFunc should
-//     perform real verification/validation (e.g., using your authclient.Validator).
-//   - If you prefer to do all work via ctx/metadata, ignore the claims map and read from ctx.
-func authInterceptor(fn UnaryAuthFunc) grpc.UnaryServerInterceptor {
-	if fn == nil {
-		return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
-			return handler(ctx, req)
+func authInterceptor(opt Options) grpc.UnaryServerInterceptor {
+	if opt.ValidateToken == nil {
+		// Auth disabled
+		return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, h grpc.UnaryHandler) (interface{}, error) {
+			return h(ctx, req)
 		}
 	}
-	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
-		claims := extractClaimsFromMD(ctx)
-		if err := fn(info.FullMethod, claims); err != nil {
-			// Map any error from your auth function to PermissionDenied.
-			// If you want different codes, return a status.Error from fn and detect it here.
-			st, ok := status.FromError(err)
-			if ok {
+	return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, h grpc.UnaryHandler) (interface{}, error) {
+		// Allow unauthenticated methods (health, reflection, etc.)
+		if isAllowlisted(info.FullMethod, opt.AllowAuthenticated) {
+			return h(ctx, req)
+		}
+
+		md, ok := metadata.FromIncomingContext(ctx)
+		if !ok {
+			return nil, status.Error(codes.Unauthenticated, "missing metadata")
+		}
+
+		token := extractToken(md, opt.APIKeyHeader)
+		if token == "" {
+			return nil, status.Error(codes.Unauthenticated, "missing token")
+		}
+
+		claims, err := opt.ValidateToken(token)
+		if err != nil {
+			// Respect status codes if the validator returns one
+			if st, ok := status.FromError(err); ok {
 				return nil, st.Err()
 			}
-			return nil, status.Error(codes.PermissionDenied, err.Error())
+			return nil, status.Error(codes.Unauthenticated, "unauthorized")
 		}
-		return handler(ctx, req)
+
+		if opt.EnrichContext != nil {
+			ctx = opt.EnrichContext(ctx, token, claims)
+		}
+		return h(ctx, req)
 	}
 }
 
-func extractClaimsFromMD(ctx context.Context) map[string]any {
-	md, _ := metadata.FromIncomingContext(ctx)
-	if md == nil {
-		return nil
-	}
-	// Try Authorization: Bearer <jwt>
+func extractToken(md metadata.MD, apiKeyHeader string) string {
 	if vals := md.Get("authorization"); len(vals) > 0 {
-		token := vals[0]
-		if strings.HasPrefix(strings.ToLower(token), "bearer ") {
-			jwt := strings.TrimSpace(token[len("bearer "):])
-			if m := decodeJWTClaims(jwt); m != nil {
-				return m
-			}
+		authz := vals[0]
+		low := strings.ToLower(authz)
+		if strings.HasPrefix(low, "bearer ") {
+			return strings.TrimSpace(authz[7:])
+		}
+		// If a raw token was sent in Authorization without Bearer prefix, accept it
+		return strings.TrimSpace(authz)
+	}
+	if apiKeyHeader != "" {
+		if vals := md.Get(strings.ToLower(apiKeyHeader)); len(vals) > 0 {
+			return strings.TrimSpace(vals[0])
 		}
 	}
-	// Fallback: if someone passed "x-claims" header with JSON
-	if vals := md.Get("x-claims"); len(vals) > 0 {
-		var m map[string]any
-		if json.Unmarshal([]byte(vals[0]), &m) == nil {
-			return m
-		}
-	}
-	return nil
+	return ""
 }
 
-func decodeJWTClaims(jwt string) map[string]any {
-	parts := strings.Split(jwt, ".")
-	if len(parts) != 3 {
-		return nil
+func isAllowlisted(fullMethod string, allow []string) bool {
+	if len(allow) == 0 {
+		return false
 	}
-	payload := parts[1]
-	// base64url decode with padding fix
-	if m := len(payload) % 4; m != 0 {
-		payload += strings.Repeat("=", 4-m)
+	for _, a := range allow {
+		if a == fullMethod || (strings.HasSuffix(a, "*") && strings.HasPrefix(fullMethod, strings.TrimSuffix(a, "*"))) {
+			return true
+		}
 	}
-	b, err := base64.URLEncoding.DecodeString(payload)
-	if err != nil {
-		return nil
-	}
-	var out map[string]any
-	if json.Unmarshal(b, &out) != nil {
-		return nil
-	}
-	return out
+	return false
 }

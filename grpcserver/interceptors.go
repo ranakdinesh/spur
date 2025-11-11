@@ -20,16 +20,14 @@ const headerRequestID = "x-request-id"
 
 func buildUnaryChain(opt Options) grpc.UnaryServerInterceptor {
 	var chain []grpc.UnaryServerInterceptor
-
-	// Order matters: reqid → rate → auth → recovery wrapper around handler → logging last to capture code/latency
 	if opt.EnableReqID {
 		chain = append(chain, reqIDInterceptor())
 	}
 	if opt.RateLimit != nil {
 		chain = append(chain, rateLimitInterceptor(opt.RateLimit))
 	}
-	if opt.Auth != nil {
-		chain = append(chain, authInterceptor(opt.Auth))
+	if opt.ValidateToken != nil {
+		chain = append(chain, authInterceptor(opt))
 	}
 	if opt.EnableRecovery {
 		chain = append(chain, recoveryInterceptor(opt.Log))
@@ -37,10 +35,8 @@ func buildUnaryChain(opt Options) grpc.UnaryServerInterceptor {
 	if opt.EnableAccessLogs {
 		chain = append(chain, accessLogInterceptor(opt.Log))
 	}
-
 	return chainUnary(chain...)
 }
-
 func chainUnary(inters ...grpc.UnaryServerInterceptor) grpc.UnaryServerInterceptor {
 	switch len(inters) {
 	case 0:
@@ -51,7 +47,7 @@ func chainUnary(inters ...grpc.UnaryServerInterceptor) grpc.UnaryServerIntercept
 		return func(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
 			// fold from right to left
 			h := handler
-			for i := len(inters)-1; i >= 0; i-- {
+			for i := len(inters) - 1; i >= 0; i-- {
 				next := h
 				inter := inters[i]
 				h = func(c context.Context, r interface{}) (interface{}, error) {

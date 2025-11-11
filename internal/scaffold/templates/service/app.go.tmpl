@@ -241,32 +241,46 @@ func (a *App) setupGRPCServer(ctx context.Context) error {
 	// This function bridges the gap between authclient.Validator and grpcserver.UnaryAuthFunc
 
 	{{- if .WithAuth }}
-	var authFunc grpcserver.UnaryAuthFunc // <-- MOVED DECLARATION INSIDE
-	if a.Auth != nil {
-		authFunc = func(ctx context.Context, token string) (context.Context, error) {
-			// Use the validator to validate the token
-			claims, err := a.Auth.Validate(ctx, token)
-			if err != nil {
-				a.Log.Warn(ctx).Err(err).Msg("gRPC auth validation failed")
-				return nil, status.Error(codes.Unauthenticated, "unauthorized") // Use codes.Unauthenticated
-			}
+	validate := func(ctx context.Context, token string) (grpcserver.Claims, error) {
+        claims, err := a.Auth.Validate(ctx, token)
+        if err != nil {
+            a.Log.Warn(ctx).Err(err).Msg("gRPC auth validation failed")
+            return grpcserver.Claims{}, status.Error(codes.Unauthenticated, "unauthorized")
+        }
+        return grpcserver.Claims{
+            Subject:  claims.Subject,
+            TenantID: claims.TenantID,
+            Scope:    claims.Scope,
+            Raw:      nil, // optional
+        }, nil
+    }
 
-			// On success, enrich the context
-			ctx = authclient.WithToken(ctx, token)
-			if claims.Subject != "" {
-				ctx = authclient.WithSubject(ctx, claims.Subject)
-				ctx = logger.WithUserID(ctx, claims.Subject) // Also enrich logger
-			}
-			if claims.TenantID != "" {
-				ctx = authclient.WithTenantID(ctx, claims.TenantID)
-				ctx = logger.WithTenantID(ctx, claims.TenantID) // Also enrich logger
-			}
-			if len(claims.Scope) > 0 {
-				ctx = authclient.WithScopes(ctx, claims.Scope)
-			}
-			return ctx, nil
-		}
-	}
+    // 2) Enrich context for downstream handlers (optional but recommended)
+    enricher := func(ctx context.Context, token string, c grpcserver.Claims) context.Context {
+        ctx = authclient.WithToken(ctx, token)
+        if c.Subject != "" {
+            ctx = authclient.WithSubject(ctx, c.Subject)
+            ctx = logger.WithUserID(ctx, c.Subject)
+        }
+        if c.TenantID != "" {
+            ctx = authclient.WithTenantID(ctx, c.TenantID)
+            ctx = logger.WithTenantID(ctx, c.TenantID)
+        }
+        if len(c.Scope) > 0 {
+            ctx = authclient.WithScopes(ctx, c.Scope)
+        }
+        return ctx
+    }
+
+    // 3) Pass these to the server options
+    srv, err := grpcserver.New(grpcserver.Options{
+        Addr:              a.Config.GRPCAddr,
+        Log:               a.Log,
+        ValidateToken:     validate,
+        APIKeyHeader:      a.Config.APIKeyHeader, // optional
+        AllowUnauthenticated: []string{"/grpc.health.v1.Health/*", "/grpc.reflection.v1alpha.ServerReflection/*"},
+        EnrichContext:     enricher,
+    }, register)
 	{{- end }}
 	// --- END ADAPTER ---
 
