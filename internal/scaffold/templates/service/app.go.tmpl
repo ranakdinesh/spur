@@ -279,7 +279,7 @@ func (a *App) setupGRPCServer(ctx context.Context) error {
 
         opt.ValidateToken = validate
         opt.APIKeyHeader = a.Config.APIKeyHeader
-        opt.AllowUnAuthenticated = []string{"/grpc.health.v1.Health/*", "/grpc.reflection.v1alpha.ServerReflection/*"}
+        opt.AllowAuthenticated = []string{"/grpc.health.v1.Health/*", "/grpc.reflection.v1alpha.ServerReflection/*"}
         opt.EnrichContext = enricher
     }
     {{- end }}
